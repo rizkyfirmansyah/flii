@@ -1,5 +1,5 @@
 #==========================================================#
-# FLII processing to update and ingested into postgresql database
+# FLII processing to update and ingested into GCP
 #==========================================================#
 # Author: Rizky Firmansyah
 # rizky.firmansyah@wri.org
@@ -92,10 +92,10 @@ class FLII(object):
         # self.output_file = output_file
         # self.output_filename = output_filename
         self.year = year
-        self.infrastructure = ee.Image('users/aduncan/osm_13_rast_300/new_infra_21')
-        # Raw Direct Deforestation Pressure Score  (H’): Layer error: Image.load: Image asset 'users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22' not found (does not exist or caller does not have access).
+        self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
+        # Raw Direct Deforestation Pressure Score (H’): Layer error: Image.load: Image asset 'users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22' not found (does not exist or caller does not have access).
         self.deforestation = ee.Image('users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22')
-        # Raw Direct Agriculture Pressure Score  (A’): Layer error: Image.load: Image asset 'users/aduncan/flii2_crop/flii2_crop_2019' not found (does not exist or caller does not have access).
+        # Raw Direct Agriculture Pressure Score (A’): Layer error: Image.load: Image asset 'users/aduncan/flii2_crop/flii2_crop_2019' not found (does not exist or caller does not have access).
         self.crop = ee.Image('users/aduncan/flii2_crop/flii2_crop_2019') # why do you need to refer this asset? What's the purpose?
         # connect pre-2021: Layer error: Image.load: Image asset 'users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022' not found (does not exist or caller does not have access).
         self.connectivity = ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022') # what kind of feature is this?
@@ -284,7 +284,7 @@ class FLII(object):
         #         password=passwd
         #     )
         #     cursor = psy_conn.cursor()
-        #     sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ('{MODIS_BURNT_AREA}', '{_region}', 'PROCESSED', '{self.start_date}', '{self.end_date}', '{_filename}', '{datetime.now()}')"
+        #     sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ('FLII', '', 'PROCESSED', '{self.start_date}', '{self.end_date}', '', '{datetime.now()}')"
         #     cursor.execute(sql_convert2shp)
         #     psy_conn.commit()
             
