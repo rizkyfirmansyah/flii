@@ -19,7 +19,6 @@ from datetime import datetime
 from sqlalchemy import create_engine
 import psycopg2
 
-from retry import retry
 from dotenv import load_dotenv
 import argparse, sys
 
@@ -79,11 +78,152 @@ psy_conn = psycopg2.connect(
 )
 cursor = psy_conn.cursor()
 
+##################################
+### TESTING PURPOSES
+##################################
+aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
+aoi_df = gpd.read_file(aoi_shp).to_json()
+aoi = ee.FeatureCollection(json.loads(aoi_df)).geometry()
+
 def array_calc(number):
     return ee.Number(0.75).pow(ee.Number(number))
 
 def array_calc_defaun(number):
     return ee.Number(19).subtract(ee.Number(number))
+
+def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
+    task = ee.batch.Export.image.toCloudStorage(
+        image=image, 
+        description=fileName,
+        bucket='assets-geo',
+        fileNamePrefix='benefit/flii/' + fileName,
+        region=aoi,
+        scale=scale,
+        crs=crs,
+        maxPixels=1e13)
+    
+    task.start()
+    while task.active():
+        print(f"Waiting on (id: {task.id})")
+        time.sleep(30)
+        
+    print(f"Status task --- {task.status()}")
+    
+
+def export2asset(image, assetId, aoi, scale=300, crs='EPSG:4326'):
+    task = ee.batch.Export.image.toAsset(
+        image=image, 
+        description='exporting ' + assetId,
+        assetId=assetId, 
+        region=aoi,
+        scale=scale,
+        crs=crs,
+        maxPixels=1e13)
+    
+    task.start()
+    while task.active():
+        print(f"Waiting on (id: {task.id})")
+        time.sleep(30)
+    
+def export2drive(image, description, aoi, scale=300, crs='EPSG:4326'):
+    
+    task = ee.batch.Export.image.toDrive(
+        image=image,
+        description=description,
+        region=aoi,
+        scale=scale,
+        crs=crs,
+        maxPixels=1e13
+    )
+        
+    task.start()
+    while task.active():
+        print(f"Waiting on (id: {task.id})")
+        time.sleep(30)
+    # try:
+    #     psy_conn = psycopg2.connect(
+    #         host=host,
+    #         port=port,
+    #         database=dbname,
+    #         user=user,
+    #         password=passwd
+    #     )
+    #     cursor = psy_conn.cursor()
+    #     sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ('FLII', '', 'PROCESSED', '{self.start_date}', '{self.end_date}', '', '{datetime.now()}')"
+    #     cursor.execute(sql_convert2shp)
+    #     psy_conn.commit()
+        
+    # except psycopg2.ProgrammingError as err:
+    #     psy_conn.rollback()
+    #     logging.error(f"Failed to insert record of {_filename}: {err}")
+    
+    # finally:
+        # release the connection back to the pool
+        # psy_conn.close()
+        
+    task.start()
+    while task.active():
+        print(f"Waiting on (id: {task.id})")
+        time.sleep(30)
+
+class TotalConnectivity(object):
+    def __init__(self):
+        self.esacci = ee.Image('users/aduncan/cci/ESACCI-LC-L4-LCCS-Map-300m-P1Y-1992_2015-v207')
+        self.ecoregion = ee.FeatureCollection('RESOLVE/ECOREGIONS/2017')
+        self.forest_cover = ee.Image('users/aduncan/wri/forest_cover_map')
+        self.loss_classes_old = ee.Image('users/aduncan/wri/Goode_FinalClassification_19_05pcnt_prj') 
+        self.loss_classes_new = ee.Image('users/aduncan/wri/Curtis_updated_2021_v20220315').unmask(0)
+        self.systemscale = 300
+        self.fragmincoresize = 20
+        self.crs = 'EPSG:4326'
+        self.gaussian_kernel = ee.Kernel.gaussian(radius=8, sigma=2, units='pixels')
+
+        self.forest_cover = self.forest_cover.updateMask(self.forest_cover.neq(0))
+        self.forest_cover_ourdefinition  = self.forest_cover.neq(1).multiply(self.forest_cover.neq(4)).multiply(self.forest_cover.neq(12)).unmask(0).resample().reproject(crs=self.crs, scale=self.systemscale)
+        self.boreal_forest = self.ecoregion.filter(ee.Filter.eq('BIOME_NAME','Boreal Forests/Taiga')).reduceToImage(['BIOME_NUM'],ee.Reducer.max()).gt(0).unmask(0).reproject(crs=self.crs,scale=self.systemscale)
+
+    def connectivity_model(self, lossyear, loss_classes, unknown_bool):
+        hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9").select('treecover2000').gt(20)
+        hansen_lossyear = ee.Image("UMD/hansen/global_forest_change_2022_v1_10").select('lossyear')
+        hansen_loss = hansen_lossyear.lt(lossyear).updateMask(hansen_lossyear.neq(0)).multiply(loss_classes.neq(4)).multiply(loss_classes.neq(2)).multiply(loss_classes.neq(3)).multiply(loss_classes.neq(unknown_bool)).unmask(0)
+        hansen_above30 = hansen.subtract(hansen_loss).gt(0).reproject(crs=self.crs, scale=ee.Number(self.systemscale))
+        hansen_above30_masked = hansen_above30.updateMask(hansen_above30)
+        hansen_no_islet = hansen_above30_masked.connectedPixelCount().reproject(crs=self.crs, scale=ee.Number(self.systemscale)).gte(ee.Number(self.fragmincoresize)).unmask(0)
+        focal_sum = hansen_no_islet.reproject(crs=self.crs, scale=10000).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=self.gaussian_kernel).reproject(crs=self.crs, scale=5000)
+
+        return focal_sum.resample().reproject(crs=self.crs, scale=self.systemscale).updateMask(hansen_no_islet)
+
+    def main(self):
+        ESACCI_1992 = self.esacci.select('b1')
+        ESACCI_2015 = self.ESACCI.select('b24')
+        ESACCI_60 =  ESACCI_2015.eq(ee.Image.constant(60))
+        ESACCI_100 =  ESACCI_2015.eq(ee.Image.constant(100))
+        ESACCI_120 =  ESACCI_2015.eq(ee.Image.constant(120))
+        ESACCI_121 =  ESACCI_2015.eq(ee.Image.constant(121))
+        ESACCI_122 =  ESACCI_2015.eq(ee.Image.constant(122))
+        ESACCI_130 =  ESACCI_2015.eq(ee.Image.constant(130))
+        ESACCI_140 =  ESACCI_2015.eq(ee.Image.constant(140))
+        ESACCI_150 =  ESACCI_2015.eq(ee.Image.constant(150))
+        ESACCI_152 =  ESACCI_2015.eq(ee.Image.constant(152))
+        ESACCI_180 =  ESACCI_2015.eq(ee.Image.constant(180))
+        ESACCI_200 =  ESACCI_2015.eq(ee.Image.constant(200))
+        ESACCI_201 =  ESACCI_2015.eq(ee.Image.constant(201))
+        ESACCI_202 =  ESACCI_2015.eq(ee.Image.constant(202)) 
+        ESACCI_220 =  ESACCI_2015.eq(ee.Image.constant(220))
+
+        ESACCI_mask = ESACCI_60.add(ESACCI_100).add(ESACCI_120).add(ESACCI_121).add(ESACCI_122).add(ESACCI_130).add(ESACCI_140).add(ESACCI_150).add(ESACCI_152).add(ESACCI_180).add(ESACCI_200).add(ESACCI_201).add(ESACCI_202).add(ESACCI_220).add(self.boreal_forest)
+
+        forest_cover_ourdefinition_a = self.forest_cover_ourdefinition.multiply(ESACCI_mask.neq(1)).multiply(ESACCI_mask.neq(2)).reproject(crs=self.crs, scale=self.systemscale)
+
+        def total_connectivity():
+            focal_sum = forest_cover_ourdefinition_a.reproject(crs=self.crs, scale=5000).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=self.gaussian_kernel).reproject(crs=self.crs, scale=5000)
+            return focal_sum.resample().reproject(crs=self.crs, scale=self.systemscale)
+        
+        return total_connectivity()
+
+    def export(self, aoi):
+        export2GCP(self.connectivity_model(22, self.loss_classes_new, 4), 'total_connectivity_2022', aoi)
+        export2GCP(self.loss_classes_new, 'curtis_2021', aoi)
 
 class FLII(object):
     
@@ -92,26 +232,23 @@ class FLII(object):
         # self.output_file = output_file
         # self.output_filename = output_filename
         self.year = year
+        # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
-        # Raw Direct Deforestation Pressure Score (H’): Layer error: Image.load: Image asset 'users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22' not found (does not exist or caller does not have access).
+        # Raw Direct Deforestation Pressure Score (H’)
         self.deforestation = ee.Image('users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22')
-        # Raw Direct Agriculture Pressure Score (A’): Layer error: Image.load: Image asset 'users/aduncan/flii2_crop/flii2_crop_2019' not found (does not exist or caller does not have access).
-        self.crop = ee.Image('users/aduncan/flii2_crop/flii2_crop_2019') # why do you need to refer this asset? What's the purpose?
-        # connect pre-2021: Layer error: Image.load: Image asset 'users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022' not found (does not exist or caller does not have access).
-        self.connectivity = ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022') # what kind of feature is this?
-        self.boreal_connectivity = ee.Image('users/aduncan/osm_earth/total_connectivity_original_borealfixed') # is it boreal forest?
+        # Raw Direct Agriculture Pressure Score (A’)
+        self.crop = ee.Image('users/aduncan/flii2_crop/flii2_crop_2019')
+        self.connectivity = ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
+        self.boreal_connectivity = ee.Image('users/aduncan/osm_earth/total_connectivity_original_borealfixed')
+        # This dataset contains maps of the location and temporal distribution of surface water from 1984 to 2015 and provides statistics on the extent and change of those water surfaces.
+        # These data were generated using 3,066,102 scenes from Landsat 5, 7, and 8 acquired between 16 March 1984 and 10 October 2015. Each pixel was individually classified into water / non-water using an expert system and the results were collated into a monthly history for the entire time period and two epochs (1984-1999, 2000-2015) for change detection.
+        self.direct_sanity = ee.Image('users/aduncan/flii2_direct/total_direct_pressure_2017')
+        self.indirect_sanity = ee.Image('users/yourecoveredinbees/flii2_ephemeral/total_indirect_pressure_2017')
+        self.water_extent = ee.Image('JRC/GSW1_0/GlobalSurfaceWater').select('occurrence').lte(75).unmask(1).multiply(ee.Image(0).clip(ee.FeatureCollection('users/aduncan/caspian')).unmask(1))
+        self.ocean = ee.Image('users/aduncan/cci/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40')
         self.start_date = '2017-03-01'
         self.end_date = '2017-03-31'
         self.scale = 300
-        # This dataset contains maps of the location and temporal distribution of surface water from 1984 to 2015 and provides statistics on the extent and change of those water surfaces.
-        # These data were generated using 3,066,102 scenes from Landsat 5, 7, and 8 acquired between 16 March 1984 and 10 October 2015. Each pixel was individually classified into water / non-water using an expert system and the results were collated into a monthly history for the entire time period and two epochs (1984-1999, 2000-2015) for change detection.
-        self.water_extent = ee.Image('JRC/GSW1_0/GlobalSurfaceWater').select('occurrence').lte(75).unmask(1)
-        self.ocean = ee.Image('users/aduncan/cci/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40')
-        self.direct_sanity = ee.Image('users/aduncan/flii2_direct/total_direct_pressure_2017')
-        self.indirect_sanity = ee.Image('users/yourecoveredinbees/flii2_ephemeral/total_indirect_pressure_2017')
-        # self.start_date = self.get_start_end()[0]
-        # self.end_date = self.get_start_end()[1]
-        self.aoi = None
         self.infra_hawths = self.hawths(self.infrastructure, 0.254)
         self.crop_hawths = self.hawths(self.crop, 2.069)
         self.defo_hawths = self.hawths(self.deforestation, 8.535)
@@ -126,7 +263,7 @@ class FLII(object):
                     reducer=ee.Reducer.sum(),
                     kernel=self.kernelDefaun()).reproject(crs=self.crs,scale=600)
         self.final_defaun_pressure = self.defaun_pressure.resample().reproject(crs=self.crs,scale=self.scale).multiply(0.25).where(self.defaun_pressure.gte(0.1),0.1)
-        self.total_pressure_raw = self.total_direct_pressure.add(self.total_indirect_pressure).add(self.defaun_pressure).updateMask(self.water_extent).updateMask(self.ocean) 
+        self.total_pressure_raw = self.total_direct_pressure.add(self.total_indirect_pressure).add(self.final_defaun_pressure).updateMask(self.water_extent).updateMask(self.ocean) 
         self.ratio = self.connectivity.divide(self.boreal_connectivity.unmask(0.001).where(self.boreal_connectivity.eq(0),0.001))
         self.final_ratio = self.ratio.where(self.ratio.gt(1),1)
         
@@ -184,21 +321,6 @@ class FLII(object):
         fixedkernel = ee.Kernel.fixed(39, 39, kernellists, -20, -20, True)
         
         return fixedkernel
-    
-    def exportToAsset(self, image, description, assetId):
-        task = ee.batch.Export.image.toAsset(
-            image=image, 
-            description=description,
-            assetId=assetId, 
-            region=self.aoi,
-            scale=self.scale,
-            crs=self.crs,
-            maxPixels=1e13)
-        
-        task.start()
-        while task.active():
-            print(f"Waiting on (id: {task.id})")
-            time.sleep(30)
             
     def kernelDefaun(self):
             
@@ -253,9 +375,9 @@ class FLII(object):
         return fixedkernel_defaun
 
     def getAsset(self):
-        self.exportToAsset(self.total_indirect_pressure, 'total_indirect_pressure_20' + self.year, 'flii2v2_ephemeral/total_indirect_pressure_20' + self.year)
-        self.exportToAsset(self.defaun_pressure, 'total_longrange_pressure_20' + self.year, 'flii2v2_ephemeral/total_longrange_pressure_20' + self.year)
-        self.exportToAsset(self.defaun_pressure, 'fpi_20' + self.year, 'flii2v3_fpi/fpi_20' + self.year)
+        export2asset(self.total_indirect_pressure, 'flii2v2_ephemeral/total_indirect_pressure_20' + self.year, self.aoi)
+        export2asset(self.defaun_pressure, 'flii2v2_ephemeral/total_longrange_pressure_20' + self.year, self.aoi)
+        export2asset(self.defaun_pressure, 'flii2v3_fpi/fpi_20' + self.year, self.aoi)
         
     def flii_metric(self):
                 
@@ -263,50 +385,17 @@ class FLII(object):
         raw_intact = ratio_0_1.add(self.total_pressure_raw)
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
-        self.export2drive(final_metric.multiply(10000).toInt().unmask(-9999), 'flii2v6_20' + self.year, self.aoi)
-        
-    def export2drive(self, image, description, region):
-        
-        task = ee.batch.Export.image.toDrive(
-            image=image,
-            description=description,
-            region=region,
-            scale=self.scale,
-            crs=self.crs,
-            maxPixels=1e13
-        )
-        # try:
-        #     psy_conn = psycopg2.connect(
-        #         host=host,
-        #         port=port,
-        #         database=dbname,
-        #         user=user,
-        #         password=passwd
-        #     )
-        #     cursor = psy_conn.cursor()
-        #     sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ('FLII', '', 'PROCESSED', '{self.start_date}', '{self.end_date}', '', '{datetime.now()}')"
-        #     cursor.execute(sql_convert2shp)
-        #     psy_conn.commit()
-            
-        # except psycopg2.ProgrammingError as err:
-        #     psy_conn.rollback()
-        #     logging.error(f"Failed to insert record of {_filename}: {err}")
-        
-        # finally:
-            # release the connection back to the pool
-            # psy_conn.close()
-            
-        task.start()
-        while task.active():
-            print(f"Waiting on (id: {task.id})")
-            time.sleep(30)
-            
+        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), 'flii_py_' + str(self.year), aoi)
+
+
 def main():
     args = _parse_args(sys.argv[1:])
     start = datetime.now()
     fetch_gee = FLII(year=args.year)
     fetch_gee.flii_metric()
-    
+    # total_connectivity = TotalConnectivity()
+    # total_connectivity.export(aoi)
+    logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
 if __name__ == "__main__":
     main()
