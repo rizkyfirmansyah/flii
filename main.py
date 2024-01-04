@@ -18,7 +18,8 @@ import logging
 from datetime import datetime
 from sqlalchemy import create_engine
 import psycopg2
-
+import os
+import uuid
 from dotenv import load_dotenv
 import argparse, sys
 
@@ -81,7 +82,8 @@ cursor = psy_conn.cursor()
 ##################################
 ### TESTING PURPOSES
 ##################################
-aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
+# aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
+aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/gadm_bbox.shp'
 aoi_df = gpd.read_file(aoi_shp).to_json()
 aoi = ee.FeatureCollection(json.loads(aoi_df)).geometry()
 
@@ -90,6 +92,28 @@ def array_calc(number):
 
 def array_calc_defaun(number):
     return ee.Number(19).subtract(ee.Number(number))
+
+def log2db_gee_c(layer):
+    try:
+        psy_conn = psycopg2.connect(
+            host=host,
+            port=port,
+            database=dbname,
+            user=user,
+            password=passwd
+        )
+        cursor = psy_conn.cursor()
+        sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ("+layer+", '', 'PROCESSED', '', '', '', '{datetime.now()}')"
+        cursor.execute(sql_convert2shp)
+        psy_conn.commit()
+        
+    except psycopg2.ProgrammingError as err:
+        psy_conn.rollback()
+        logging.error(f"Failed to insert record of {str(layer)}: {err}")
+    
+    finally:
+        # release the connection back to the pool
+        psy_conn.close()
 
 def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
     task = ee.batch.Export.image.toCloudStorage(
@@ -109,7 +133,6 @@ def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
         
     print(f"Status task --- {task.status()}")
     
-
 def export2asset(image, assetId, aoi, scale=300, crs='EPSG:4326'):
     task = ee.batch.Export.image.toAsset(
         image=image, 
@@ -140,38 +163,119 @@ def export2drive(image, description, aoi, scale=300, crs='EPSG:4326'):
     while task.active():
         print(f"Waiting on (id: {task.id})")
         time.sleep(30)
-    # try:
-    #     psy_conn = psycopg2.connect(
-    #         host=host,
-    #         port=port,
-    #         database=dbname,
-    #         user=user,
-    #         password=passwd
-    #     )
-    #     cursor = psy_conn.cursor()
-    #     sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ('FLII', '', 'PROCESSED', '{self.start_date}', '{self.end_date}', '', '{datetime.now()}')"
-    #     cursor.execute(sql_convert2shp)
-    #     psy_conn.commit()
-        
-    # except psycopg2.ProgrammingError as err:
-    #     psy_conn.rollback()
-    #     logging.error(f"Failed to insert record of {_filename}: {err}")
-    
-    # finally:
-        # release the connection back to the pool
-        # psy_conn.close()
         
     task.start()
     while task.active():
         print(f"Waiting on (id: {task.id})")
         time.sleep(30)
 
+def mktemp(prefix=None, dir=None):
+    # Set working directory in the current file under shp dir
+    if dir is None:
+        dir = os.path.join(os.getcwd(), 'shp')
+    if not os.path.exists(dir):
+        os.makedirs(dir, exist_ok=True)
+    tempfile = None
+
+    if prefix is None: prefix = '' 
+    else: prefix = prefix + '_'
+
+    try:
+        tempfile = os.path.join(dir, f"{prefix + str(uuid.uuid4())[:10]}.tif")
+    except Exception as e:
+        logging.error(f"Something went wrong.")
+
+    return tempfile
+
+def rescale_raster(input_raster, out_file):
+    """Reproject into EPSG:4326 then resample into 300 from 30 (matching pixel resolution with others raster)
+
+    Args:
+        input_raster (_type_): absolute path where the projected raster is stored
+        out_file (_type_): _description_
+
+    Returns:
+        output_file: the absolute path of raster file
+    """
+
+    from rasterio.enums import Resampling
+    from rasterio import open, band
+    from rasterio.io import MemoryFile
+    from rasterio.crs import CRS
+    from rasterio.warp import calculate_default_transform, reproject, Resampling
+
+    src_dataset = open(input_raster)
+    
+    dst_crs = CRS.from_epsg(4326)
+    output_file = mktemp(out_file)
+    
+    # Define the new pixel size (target resolution)
+    new_x_resolution = 0.002694945852358564611
+    new_y_resolution = -0.002694945852358564611
+    target_resolution = (new_x_resolution, new_y_resolution)
+    
+    def rescale_meta(src):
+        # Compute the new dimensions based on the target resolution
+        dst_width = int(src.width * (src.transform.a / target_resolution[0]))
+        dst_height = int(src.height * (src.transform.e / target_resolution[1]))
+        dst_transform = src.transform * src.transform.scale(
+                    (src.width / dst_width), (src.height / dst_height))
+        
+        out_meta = src.meta.copy()
+        out_meta.update({
+            "driver": "GTiff",
+            "height": dst_height,
+            "width": dst_width,
+            "transform": dst_transform,
+            "count": src.count,
+            "dtype": src.dtypes[0],
+            "crs": src.crs
+        })
+        return out_meta
+    
+    def reproject_meta(src, crs):
+        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
+        out_meta = src.meta.copy()
+        out_meta.update({
+            'crs': crs,
+            'transform': transform,
+            'width': width,
+            'height': height
+        })
+        return out_meta
+    
+    def _reproject(out):
+        reproject(
+            source=band(src_dataset, 1),
+            destination=band(out, 1),
+            src_transform=src_dataset.transform,
+            src_crs=src_dataset.crs,
+            dst_transform=out.transform,
+            dst_crs=dst_crs,
+            resampling=Resampling.nearest)
+    
+    try:
+        with MemoryFile() as mem_file:
+            meta_4326 = reproject_meta(src_dataset, dst_crs)
+            with mem_file.open(**meta_4326) as mem_dst:
+                # rescale the raster in a single-band raster to 300m x 300m
+                _reproject(mem_dst)
+                meta_rescale = rescale_meta(mem_dst)                
+                dst_dataset = open(output_file, 'w', **meta_rescale)
+                _reproject(dst_dataset)
+    finally:
+        # close the dataset
+        dst_dataset.close()
+        src_dataset.close()
+        logging.info(f"Reproject raster completed. Output saved to {output_file}.")
+            
+        return output_file
+
 class TotalConnectivity(object):
     def __init__(self):
         self.esacci = ee.Image('users/aduncan/cci/ESACCI-LC-L4-LCCS-Map-300m-P1Y-1992_2015-v207')
         self.ecoregion = ee.FeatureCollection('RESOLVE/ECOREGIONS/2017')
         self.forest_cover = ee.Image('users/aduncan/wri/forest_cover_map')
-        self.loss_classes_old = ee.Image('users/aduncan/wri/Goode_FinalClassification_19_05pcnt_prj') 
         self.loss_classes_new = ee.Image('users/aduncan/wri/Curtis_updated_2021_v20220315').unmask(0)
         self.systemscale = 300
         self.fragmincoresize = 20
@@ -221,16 +325,12 @@ class TotalConnectivity(object):
         
         return total_connectivity()
 
-    def export(self, aoi):
-        export2GCP(self.connectivity_model(22, self.loss_classes_new, 4), 'total_connectivity_2022', aoi)
-        export2GCP(self.loss_classes_new, 'curtis_2021', aoi)
+    def export(self):
+        export2GCP(self.connectivity_model(22, self.loss_classes_new, 4), 'sea_total_connectivity', aoi)
 
 class FLII(object):
     
-    def __init__(self, year):
-        self.drive_folder = os.environ['DRIVE_FOLDER_FLII']
-        # self.output_file = output_file
-        # self.output_filename = output_filename
+    def __init__(self, year, connectivity):
         self.year = year
         # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
@@ -238,7 +338,7 @@ class FLII(object):
         self.deforestation = ee.Image('users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22')
         # Raw Direct Agriculture Pressure Score (A’)
         self.crop = ee.Image('users/aduncan/flii2_crop/flii2_crop_2019')
-        self.connectivity = ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
+        self.connectivity = ee.Image(connectivity) or ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
         self.boreal_connectivity = ee.Image('users/aduncan/osm_earth/total_connectivity_original_borealfixed')
         # This dataset contains maps of the location and temporal distribution of surface water from 1984 to 2015 and provides statistics on the extent and change of those water surfaces.
         # These data were generated using 3,066,102 scenes from Landsat 5, 7, and 8 acquired between 16 March 1984 and 10 October 2015. Each pixel was individually classified into water / non-water using an expert system and the results were collated into a monthly history for the entire time period and two epochs (1984-1999, 2000-2015) for change detection.
@@ -375,26 +475,122 @@ class FLII(object):
         return fixedkernel_defaun
 
     def getAsset(self):
-        export2asset(self.total_indirect_pressure, 'flii2v2_ephemeral/total_indirect_pressure_20' + self.year, self.aoi)
-        export2asset(self.defaun_pressure, 'flii2v2_ephemeral/total_longrange_pressure_20' + self.year, self.aoi)
-        export2asset(self.defaun_pressure, 'flii2v3_fpi/fpi_20' + self.year, self.aoi)
+        export2asset(self.total_indirect_pressure, 'flii2v2_ephemeral/total_indirect_pressure_20' + self.year, aoi)
+        export2asset(self.defaun_pressure, 'flii2v2_ephemeral/total_longrange_pressure_20' + self.year, aoi)
+        export2asset(self.defaun_pressure, 'flii2v3_fpi/fpi_20' + self.year, aoi)
         
-    def flii_metric(self):
-                
+    def flii_metric(self):            
         ratio_0_1 = self.final_ratio.multiply(-1).add(1)
         raw_intact = ratio_0_1.add(self.total_pressure_raw)
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
-        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), 'flii_py_' + str(self.year), aoi)
+        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), 'flii_' + str(self.year), aoi)
 
+
+def upload_to_bucket(path_to_file, bucket_name, blob_name):
+    from google.cloud import storage
+    """ Upload data to a bucket"""
+     
+    # Explicitly use service account credentials by specifying the private key file.
+    storage_client = storage.Client.from_service_account_json('/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/scene-coalition-6563cec7084e.json')
+
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(path_to_file)
+    logging.info(f"File {path_to_file} uploaded to {blob_name}.")
+    
+    #returns a public url
+    return blob.public_url
+
+def check_geetask_status(task_id):
+    """Check the status of an Earth Engine task.
+
+    Args:
+        task_id (string): Unique task ID. Check on this url https://code.earthengine.google.com/tasks
+    """
+    try:
+        task_status = ee.data.getTaskStatus(task_id)[0]
+        return task_status['state']
+    except Exception as e:
+        print(f'Error checking task status: {e}')
+        return None
+        
+def wait_for_task_completion(task_id, polling_interval=15):
+    """Wait for an Earth Engine task to complete.
+
+    Args:
+        task_id (string): Unique task ID. Check on this url https://code.earthengine.google.com/tasks
+        polling_interval (int, optional): _description_. Defaults to 30.
+    """
+    while True:
+        status = check_geetask_status(task_id)
+        if status is not None:
+            print(f'Task {task_id} status: {status}')
+            if status in ['COMPLETED', 'FAILED']:
+                break
+        time.sleep(polling_interval)
+
+def start_ee_upload(asset_id, gcs_path):
+    from subprocess import Popen, PIPE
+    from re import search
+    process = Popen(['earthengine', 'upload', 'image', f'--asset_id={asset_id}', gcs_path], stdout=PIPE, text=True)
+    
+    # Capture the output of the command
+    output, _ = process.communicate()
+    # Extract the task ID from the output using a regex
+    task_match = search(r'Started upload task with ID: (\w+)', output)
+
+    if task_match:
+        task_id = task_match.group(1)
+        return task_id
+    else:
+        print(f'Error: Task ID not found in the command output.')
+        return None
+    
+def start_ee_public(asset_id):
+    from subprocess import Popen, PIPE
+    process = Popen(['earthengine', 'acl', 'set', 'public', asset_id], stdout=PIPE, text=True)
+    return None
 
 def main():
     args = _parse_args(sys.argv[1:])
     start = datetime.now()
-    fetch_gee = FLII(year=args.year)
-    fetch_gee.flii_metric()
+    _connectivity = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
+    _connectivity_rescale = rescale_raster(_connectivity, 'futureforest')
+    future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}.tif'
+    path_bucket_file = f'benefit/flii/{future_forest_cover}'
+    asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
+    gcs_path = f'gs://assets-geo/{path_bucket_file}'
+    
+    try:
+        upload_to_bucket(_connectivity_rescale, 'assets-geo', path_bucket_file)
+    finally:
+        task_id = start_ee_upload(asset_id, gcs_path)
+        try:
+            wait_for_task_completion(task_id)
+        finally:
+            start_ee_public(asset_id)
+            fetch_gee = FLII(year=args.year, connectivity=asset_id)
+            fetch_gee.flii_metric()
+        
+        
+    # try:
+    #     # export2asset(_connectivity, connectivity_asset, aoi)
+    #     # https://developers.google.com/earth-engine/guides/command_line#upload
+    #     from subprocess import call
+    #     call(['earthengine', 'upload', 'image', '--asset_id=users/gis/nbs/connectivity', connectivity_gcp])
+    #     # ee.data.startIngestion(request_id=taskid, params=task_params, allow_overwrite=True) # not working
+    # finally:
+    #     print(taskid[0])
+    #     _task_status = ee.data.getTaskStatus(taskid)[0]['state']
+    #     print("CHECKING")
+    #     fetch_gee = FLII(year=args.year, connectivity=connectivity_asset)
+    #     fetch_gee.flii_metric()
+    #     ee.data.getTaskStatus('')
+    # fetch_gee = FLII(year=args.year, connectivity='users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
+    # fetch_gee.flii_metric()
     # total_connectivity = TotalConnectivity()
-    # total_connectivity.export(aoi)
+    # total_connectivity.export()
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
 if __name__ == "__main__":
