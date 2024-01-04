@@ -13,7 +13,6 @@ import time
 import geopandas as gpd
 import os
 import json
-import pandas as pd
 import logging
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -35,9 +34,7 @@ def _parse_args(args):
             """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    # parser.add_argument("-d", "--download", help="Download the layer into Google Drive?, default=True", default=True)
     parser.add_argument("-y", "--year", help="Specify the following year")
-    # parser.add_argument("-rd", "--remove_duplicates", help="Removing duplicate geometries after merging?, default to False", default=False)
     
     return parser.parse_args(args)
 
@@ -344,7 +341,7 @@ class FLII(object):
         self.deforestation = ee.Image('users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22')
         # Raw Direct Agriculture Pressure Score (A’)
         self.crop = ee.Image('users/aduncan/flii2_crop/flii2_crop_2019')
-        self.connectivity = ee.Image(connectivity) or ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
+        self.connectivity = ee.Image(connectivity) if connectivity else ee.Image('users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
         self.boreal_connectivity = ee.Image('users/aduncan/osm_earth/total_connectivity_original_borealfixed')
         # This dataset contains maps of the location and temporal distribution of surface water from 1984 to 2015 and provides statistics on the extent and change of those water surfaces.
         # These data were generated using 3,066,102 scenes from Landsat 5, 7, and 8 acquired between 16 March 1984 and 10 October 2015. Each pixel was individually classified into water / non-water using an expert system and the results were collated into a monthly history for the entire time period and two epochs (1984-1999, 2000-2015) for change detection.
@@ -567,15 +564,17 @@ def start_ee_upload(asset_id, gcs_path):
 def start_ee_public(asset_id):
     from subprocess import Popen, PIPE
     process = Popen(['earthengine', 'acl', 'set', 'public', asset_id], stdout=PIPE, text=True)
+    # Capture the output of the command
+    output, _ = process.communicate()
     return None
 
-def main():
+def main(input_raster):
     args = _parse_args(sys.argv[1:])
     start = datetime.now()
-    _connectivity = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
+    _connectivity = input_raster
     _connectivity_rescale = rescale_raster(_connectivity, 'futureforest')
-    future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}.tif'
-    path_bucket_file = f'benefit/flii/{future_forest_cover}'
+    future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}'
+    path_bucket_file = f'benefit/flii/{future_forest_cover}.tif'
     asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
     gcs_path = f'gs://assets-geo/{path_bucket_file}'
     
@@ -593,4 +592,5 @@ def main():
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
 if __name__ == "__main__":
-    main()
+    input_raster = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
+    main(input_raster)
