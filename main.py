@@ -75,7 +75,8 @@ psy_conn = psycopg2.connect(
 )
 cursor = psy_conn.cursor()
 bucket_name = 'assets-geo'
-future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}'
+uid = str(uuid.uuid4())[:8]
+future_forest_cover = f'future_fc_{uid}'
 path_bucket_file = f'benefit/flii/{future_forest_cover}.tif'
 asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
 gcs_path = f'gs://{bucket_name}/{path_bucket_file}'
@@ -138,8 +139,6 @@ def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
     while task.active():
         print(f"Waiting on (id: {task.id})")
         time.sleep(30)
-        
-    print(f"Status task --- {task.status()}")
     
 def export2asset(image, assetId, aoi, scale=300, crs='EPSG:4326'):
     task = ee.batch.Export.image.toAsset(
@@ -345,7 +344,7 @@ class TotalConnectivity(object):
 class FLII(object):
     
     def __init__(self, year, connectivity):
-        self.year = year
+        self.year = year or ''
         # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
         # Raw Direct Deforestation Pressure Score (H’)
@@ -498,7 +497,7 @@ class FLII(object):
         raw_intact = ratio_0_1.add(self.total_pressure_raw)
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
-        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), 'flii_' + str(self.year), aoi)
+        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
 
 
 def upload_to_bucket(path_to_file, bucket_name, blob_name):
@@ -614,10 +613,11 @@ def delete_gcs_file(bucket_name, path_bucket_file):
     blob.delete()
     logging.info(f"File gs://{bucket_name}/{path_bucket_file} deleted successfully.")
 
-def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file):
+def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file=False):
     remove_asset(asset_id)
     delete_gcs_file(bucket_name, path_bucket_file)
-    os.remove(local_file)
+    if local_file:
+        os.remove(local_file)
     
 def main(input_raster):
     args = _parse_args(sys.argv[1:])
@@ -642,5 +642,4 @@ if __name__ == "__main__":
     input_raster = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
     main(input_raster)
     
-    time.sleep(120)
-    cleanup_raster(asset_id, bucket_name, path_bucket_file, input_raster)
+    # cleanup_raster(asset_id, bucket_name, path_bucket_file)
