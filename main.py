@@ -272,6 +272,12 @@ def rescale_raster(input_raster, out_file):
         return output_file
 
 class TotalConnectivity(object):
+    """Obtain the total connectivity of forest
+    asset_id = users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022
+
+    Args:
+        object (_type_): _description_
+    """
     def __init__(self):
         self.esacci = ee.Image('users/aduncan/cci/ESACCI-LC-L4-LCCS-Map-300m-P1Y-1992_2015-v207')
         self.ecoregion = ee.FeatureCollection('RESOLVE/ECOREGIONS/2017')
@@ -531,6 +537,17 @@ def wait_for_task_completion(task_id, polling_interval=15):
         time.sleep(polling_interval)
 
 def start_ee_upload(asset_id, gcs_path):
+    """Ingesting a GeoTIFF file from Google Cloud Storage into Google Earth Engine using earthengine command
+    
+    Read more: https://developers.google.com/earth-engine/guides/command_line#upload 
+
+    Args:
+        asset_id (_type_): _description_
+        gcs_path (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
     from subprocess import Popen, PIPE
     from re import search
     process = Popen(['earthengine', 'upload', 'image', f'--asset_id={asset_id}', gcs_path], stdout=PIPE, text=True)
@@ -572,25 +589,7 @@ def main():
             start_ee_public(asset_id)
             fetch_gee = FLII(year=args.year, connectivity=asset_id)
             fetch_gee.flii_metric()
-        
-        
-    # try:
-    #     # export2asset(_connectivity, connectivity_asset, aoi)
-    #     # https://developers.google.com/earth-engine/guides/command_line#upload
-    #     from subprocess import call
-    #     call(['earthengine', 'upload', 'image', '--asset_id=users/gis/nbs/connectivity', connectivity_gcp])
-    #     # ee.data.startIngestion(request_id=taskid, params=task_params, allow_overwrite=True) # not working
-    # finally:
-    #     print(taskid[0])
-    #     _task_status = ee.data.getTaskStatus(taskid)[0]['state']
-    #     print("CHECKING")
-    #     fetch_gee = FLII(year=args.year, connectivity=connectivity_asset)
-    #     fetch_gee.flii_metric()
-    #     ee.data.getTaskStatus('')
-    # fetch_gee = FLII(year=args.year, connectivity='users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022')
-    # fetch_gee.flii_metric()
-    # total_connectivity = TotalConnectivity()
-    # total_connectivity.export()
+
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
 if __name__ == "__main__":
