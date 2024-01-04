@@ -17,7 +17,6 @@ import logging
 from datetime import datetime
 from sqlalchemy import create_engine
 import psycopg2
-import os
 import uuid
 from dotenv import load_dotenv
 import argparse, sys
@@ -75,6 +74,11 @@ psy_conn = psycopg2.connect(
     password=passwd
 )
 cursor = psy_conn.cursor()
+bucket_name = 'assets-geo'
+future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}'
+path_bucket_file = f'benefit/flii/{future_forest_cover}.tif'
+asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
+gcs_path = f'gs://{bucket_name}/{path_bucket_file}'
 
 ##################################
 ### TESTING PURPOSES
@@ -90,7 +94,14 @@ def array_calc(number):
 def array_calc_defaun(number):
     return ee.Number(19).subtract(ee.Number(number))
 
-def log2db_gee_c(layer):
+def log2db_gee_c(asset_id, path_bucket_file, local_path):
+    """Should store, at the minimum, these variables while batch processing the FLII function to ensure data flushing
+        asset_id
+        path_bucket_file
+        local_path
+    Args:
+        layer (_type_): _description_
+    """
     try:
         psy_conn = psycopg2.connect(
             host=host,
@@ -100,13 +111,13 @@ def log2db_gee_c(layer):
             password=passwd
         )
         cursor = psy_conn.cursor()
-        sql_convert2shp = f"INSERT INTO public.gee_collections (layer, region, status, start_date, end_date, filename, created) VALUES ("+layer+", '', 'PROCESSED', '', '', '', '{datetime.now()}')"
+        sql_convert2shp = f"INSERT INTO public.gee_collections (asset_id, path_bucket_file, local_path, created) VALUES ("+asset_id+", "+path_bucket_file+", "+local_path+", '{datetime.now()}')"
         cursor.execute(sql_convert2shp)
         psy_conn.commit()
         
     except psycopg2.ProgrammingError as err:
         psy_conn.rollback()
-        logging.error(f"Failed to insert record of {str(layer)}: {err}")
+        logging.error(f"Failed to insert record of {str(asset_id)}: {err}")
     
     finally:
         # release the connection back to the pool
@@ -116,7 +127,7 @@ def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
     task = ee.batch.Export.image.toCloudStorage(
         image=image, 
         description=fileName,
-        bucket='assets-geo',
+        bucket=bucket_name,
         fileNamePrefix='benefit/flii/' + fileName,
         region=aoi,
         scale=scale,
@@ -568,18 +579,54 @@ def start_ee_public(asset_id):
     output, _ = process.communicate()
     return None
 
+def remove_asset(asset_id):
+    """Removing specified asset in the Google Earth Engine.
+    This command is irreversible, and once an asset is deleted, it cannot be recovered
+
+    Args:
+        asset_id (string): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    from subprocess import Popen, PIPE
+    process = Popen(['earthengine', 'rm', asset_id], stdout=PIPE, text=True)
+    # Capture the output of the command
+    output, _ = process.communicate()
+    return None
+
+def delete_gcs_file(bucket_name, path_bucket_file):
+    """Delete a file from Google Cloud Storage
+
+    Args:
+        bucket_name (_type_): _description_
+        path_bucket_file (_type_): _description_
+    """
+    from google.cloud import storage
+     
+    # Explicitly use service account credentials by specifying the private key file.
+    storage_client = storage.Client.from_service_account_json('/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/scene-coalition-6563cec7084e.json')
+
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(path_bucket_file)
+    
+    # Delete the blob
+    blob.delete()
+    logging.info(f"File gs://{bucket_name}/{path_bucket_file} deleted successfully.")
+
+def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file):
+    remove_asset(asset_id)
+    delete_gcs_file(bucket_name, path_bucket_file)
+    os.remove(local_file)
+    
 def main(input_raster):
     args = _parse_args(sys.argv[1:])
     start = datetime.now()
     _connectivity = input_raster
     _connectivity_rescale = rescale_raster(_connectivity, 'futureforest')
-    future_forest_cover = f'future_fc_{str(uuid.uuid4())[:8]}'
-    path_bucket_file = f'benefit/flii/{future_forest_cover}.tif'
-    asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
-    gcs_path = f'gs://assets-geo/{path_bucket_file}'
     
     try:
-        upload_to_bucket(_connectivity_rescale, 'assets-geo', path_bucket_file)
+        upload_to_bucket(_connectivity_rescale, bucket_name, path_bucket_file)
     finally:
         task_id = start_ee_upload(asset_id, gcs_path)
         try:
@@ -594,3 +641,6 @@ def main(input_raster):
 if __name__ == "__main__":
     input_raster = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
     main(input_raster)
+    
+    time.sleep(120)
+    cleanup_raster(asset_id, bucket_name, path_bucket_file, input_raster)
