@@ -84,8 +84,8 @@ gcs_path = f'gs://{bucket_name}/{path_bucket_file}'
 ##################################
 ### TESTING PURPOSES
 ##################################
-# aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
-aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/gadm_bbox.shp'
+aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
+# aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/gadm_bbox.shp'
 aoi_df = gpd.read_file(aoi_shp).to_json()
 aoi = ee.FeatureCollection(json.loads(aoi_df)).geometry()
 
@@ -285,7 +285,7 @@ class TotalConnectivity(object):
     Args:
         object (_type_): _description_
     """
-    def __init__(self):
+    def __init__(self, future_fc=None, asset_id=None, output_export=None):
         self.esacci = ee.Image('users/aduncan/cci/ESACCI-LC-L4-LCCS-Map-300m-P1Y-1992_2015-v207')
         self.ecoregion = ee.FeatureCollection('RESOLVE/ECOREGIONS/2017')
         self.forest_cover = ee.Image('users/aduncan/wri/forest_cover_map')
@@ -293,13 +293,15 @@ class TotalConnectivity(object):
         self.systemscale = 300
         self.fragmincoresize = 20
         self.crs = 'EPSG:4326'
+        self.output_export = output_export or 'sea_total_connectivity_modified'
+        self.asset_id = asset_id or f'projects/ee-gis/assets/{future_forest_cover}'
         self.gaussian_kernel = ee.Kernel.gaussian(radius=8, sigma=2, units='pixels')
-
+        self.future_fc = ee.Image(future_fc) or ''
         self.forest_cover = self.forest_cover.updateMask(self.forest_cover.neq(0))
         self.forest_cover_ourdefinition  = self.forest_cover.neq(1).multiply(self.forest_cover.neq(4)).multiply(self.forest_cover.neq(12)).unmask(0).resample().reproject(crs=self.crs, scale=self.systemscale)
         self.boreal_forest = self.ecoregion.filter(ee.Filter.eq('BIOME_NAME','Boreal Forests/Taiga')).reduceToImage(['BIOME_NUM'],ee.Reducer.max()).gt(0).unmask(0).reproject(crs=self.crs,scale=self.systemscale)
 
-    def connectivity_model(self, lossyear, loss_classes, unknown_bool):
+    def connectivity_original(self, lossyear, loss_classes, unknown_bool):
         hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9").select('treecover2000').gt(20)
         hansen_lossyear = ee.Image("UMD/hansen/global_forest_change_2022_v1_10").select('lossyear')
         hansen_loss = hansen_lossyear.lt(lossyear).updateMask(hansen_lossyear.neq(0)).multiply(loss_classes.neq(4)).multiply(loss_classes.neq(2)).multiply(loss_classes.neq(3)).multiply(loss_classes.neq(unknown_bool)).unmask(0)
@@ -309,9 +311,13 @@ class TotalConnectivity(object):
         focal_sum = hansen_no_islet.reproject(crs=self.crs, scale=10000).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=self.gaussian_kernel).reproject(crs=self.crs, scale=5000)
 
         return focal_sum.resample().reproject(crs=self.crs, scale=self.systemscale).updateMask(hansen_no_islet)
+    
+    def connectivity_modified(self):
+        focal_sum = self.future_fc.connectedPixelCount().reproject(crs=self.crs, scale=ee.Number(self.systemscale))
+        final_focal_sum = focal_sum.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=self.gaussian_kernel)
+        return final_focal_sum
 
     def main(self):
-        ESACCI_1992 = self.esacci.select('b1')
         ESACCI_2015 = self.ESACCI.select('b24')
         ESACCI_60 =  ESACCI_2015.eq(ee.Image.constant(60))
         ESACCI_100 =  ESACCI_2015.eq(ee.Image.constant(100))
@@ -339,11 +345,21 @@ class TotalConnectivity(object):
         return total_connectivity()
 
     def export(self):
-        export2GCP(self.connectivity_model(22, self.loss_classes_new, 4), 'sea_total_connectivity', aoi)
+        export2GCP(self.connectivity_original(22, self.loss_classes_new, 4), 'aoi_total_connectivity', aoi)
+
+    def export_to_GCP(self):
+        export2GCP(self.connectivity_modified(), self.output_export, aoi)
+        logging.info(f"Total Connectivity has been finished. Output saved to GCS bucket under '{bucket_name}/benefit/flii/{self.output_export}.tif'")
+        return '{bucket_name}/benefit/flii/{self.output_export}.tif'
+
+    def export_to_asset(self):
+        export2asset(self.connectivity_modified(), self.asset_id, aoi)
+        logging.info(f"Total Connectivity has been finished. Output saved to GEE asset with the name of '{self.asset_id}'")
+        return self.asset_id
 
 class FLII(object):
     
-    def __init__(self, year, connectivity):
+    def __init__(self, connectivity, year=None):
         self.year = year or ''
         # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
@@ -498,6 +514,7 @@ class FLII(object):
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
         export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
+        logging.info(f"FLII modeled has been finised. Output saved to GCS bucket under '{bucket_name}/{path_bucket_file}' with the name of flii_{uid}.")
 
 
 def upload_to_bucket(path_to_file, bucket_name, blob_name):
@@ -541,6 +558,8 @@ def wait_for_task_completion(task_id, polling_interval=15):
             print(f'Task {task_id} status: {status}')
             if status in ['COMPLETED', 'FAILED']:
                 break
+        elif status is None:
+            break
         time.sleep(polling_interval)
 
 def start_ee_upload(asset_id, gcs_path):
@@ -633,7 +652,9 @@ def main(input_raster):
             wait_for_task_completion(task_id)
         finally:
             start_ee_public(asset_id)
-            fetch_gee = FLII(year=args.year, connectivity=asset_id)
+            # total_connectivity = TotalConnectivity(future_fc=asset_id, output_export='aoi_modified_tc')
+            # total_connectivity.export_to_GCP()
+            fetch_gee = FLII(connectivity=asset_id)
             fetch_gee.flii_metric()
 
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
