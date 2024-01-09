@@ -522,7 +522,7 @@ def upload_to_bucket(path_to_file, bucket_name, blob_name):
     """ Upload data to a bucket"""
      
     # Explicitly use service account credentials by specifying the private key file.
-    storage_client = storage.Client.from_service_account_json('/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/scene-coalition-6563cec7084e.json')
+    storage_client = storage.Client.from_service_account_json(KEY_IAM)
 
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
@@ -623,7 +623,7 @@ def delete_gcs_file(bucket_name, path_bucket_file):
     from google.cloud import storage
      
     # Explicitly use service account credentials by specifying the private key file.
-    storage_client = storage.Client.from_service_account_json('/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/scene-coalition-6563cec7084e.json')
+    storage_client = storage.Client.from_service_account_json(KEY_IAM)
 
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(path_bucket_file)
