@@ -77,15 +77,16 @@ cursor = psy_conn.cursor()
 bucket_name = 'assets-geo'
 uid = str(uuid.uuid4())[:8]
 future_forest_cover = f'future_fc_{uid}'
-path_bucket_file = f'benefit/flii/{future_forest_cover}.tif'
+folder_bucket_file = f'benefit/flii'
+path_bucket_file = f'{folder_bucket_file}/{future_forest_cover}.tif'
 asset_id = f'projects/ee-gis/assets/{future_forest_cover}'
 gcs_path = f'gs://{bucket_name}/{path_bucket_file}'
 
 ##################################
 ### TESTING PURPOSES
 ##################################
-aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
-# aoi_shp = 'https://commondatastorage.googleapis.com/assets-geo/baseline/gadm_bbox.shp'
+aoi_shp = 'https://storage.googleapis.com/assets-geo/baseline/AOI2_4326.shp'
+# aoi_shp = 'https://storage.googleapis.com/assets-geo/baseline/gadm_bbox.shp'
 aoi_df = gpd.read_file(aoi_shp).to_json()
 aoi = ee.FeatureCollection(json.loads(aoi_df)).geometry()
 
@@ -511,7 +512,7 @@ class FLII(object):
     def export_sample(self):
         _file = 'flii2v6_defor_dropLTE6_22'
         export2GCP(self.deforestation, f'{_file}', aoi)
-        logging.info(f"Exported finished, saving to GCS bucket '{bucket_name}/{path_bucket_file}' with the name of {_file}.")
+        logging.info(f"Exported finished, saving to GCS bucket '{bucket_name}/{folder_bucket_file}/{_file}'.")
         
     def flii_metric(self):            
         ratio_0_1 = self.final_ratio.multiply(-1).add(1)
@@ -519,8 +520,10 @@ class FLII(object):
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
         # export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
-        export2GCP(final_metric, f'flii_{uid}', aoi)
-        logging.info(f"FLII modeled has been finised. Output saved to GCS bucket under '{bucket_name}/{path_bucket_file}' with the name of flii_{uid}.")
+        _output_file = f'flii_{uid}'
+        export2GCP(final_metric, _output_file, aoi)
+        logging.info(f"FLII modeled has been finised. Output saved to GCS bucket under '{bucket_name}/{folder_bucket_file}/{_output_file}.tif'")
+        return f'https://storage.googleapis.com/{bucket_name}/{folder_bucket_file}/{_output_file}.tif'
 
 
 def upload_to_bucket(path_to_file, bucket_name, blob_name):
@@ -643,6 +646,17 @@ def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file=False):
     delete_gcs_file(bucket_name, path_bucket_file)
     if local_file:
         os.remove(local_file)
+        
+def summary_statistics(aoi_shp, raster, stats='mean'):
+    from rasterstats import zonal_stats
+    
+    _ = zonal_stats(aoi_shp, raster, stats=stats)
+
+    avg_stat = [stat[stats] for stat in _]
+    round_avg_stat = f'{avg_stat[0]:,.1f}'
+
+    logging.info(f"Summary statistics of FLII Model with intervention: {round_avg_stat}")
+    return f'{round_avg_stat}'
     
 def main(input_raster):
     args = _parse_args(sys.argv[1:])
@@ -659,7 +673,8 @@ def main(input_raster):
         finally:
             start_ee_public(asset_id)
             fetch_gee = FLII(connectivity=asset_id)
-            fetch_gee.flii_metric()
+            flii_model = fetch_gee.flii_metric()
+            summary_statistics(aoi_shp, flii_model)
 
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
