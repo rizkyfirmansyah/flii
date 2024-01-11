@@ -360,8 +360,9 @@ class TotalConnectivity(object):
 
 class FLII(object):
     
-    def __init__(self, connectivity=None, year=None):
+    def __init__(self, connectivity=None, year=None, mask=None):
         self.year = year or ''
+        self.mask = mask
         # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
         # Raw Direct Deforestation Pressure Score (H’)
@@ -520,6 +521,11 @@ class FLII(object):
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
         # export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
+        
+        if self.mask:
+            _ = ee.Image.constant(1).clip(aoi).mask()
+            final_metric = final_metric.updateMask(_).unmask(-9999)
+            
         _output_file = f'flii_{uid}'
         export2GCP(final_metric, _output_file, aoi)
         logging.info(f"FLII modeled has been finised. Output saved to GCS bucket under '{bucket_name}/{folder_bucket_file}/{_output_file}.tif'")
@@ -675,7 +681,7 @@ def main(input_raster):
             wait_for_task_completion(task_id)
         finally:
             start_ee_public(asset_id)
-            fetch_gee = FLII(connectivity=asset_id)
+            fetch_gee = FLII(connectivity=asset_id, mask=True)
             flii_model = fetch_gee.flii_metric()
             summary_statistics(aoi_shp, flii_model)
 
