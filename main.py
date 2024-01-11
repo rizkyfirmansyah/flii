@@ -359,7 +359,7 @@ class TotalConnectivity(object):
 
 class FLII(object):
     
-    def __init__(self, connectivity, year=None):
+    def __init__(self, connectivity=None, year=None):
         self.year = year or ''
         # Raw Weighted Infrastructure (I’)
         self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
@@ -371,8 +371,8 @@ class FLII(object):
         self.boreal_connectivity = ee.Image('users/aduncan/osm_earth/total_connectivity_original_borealfixed')
         # This dataset contains maps of the location and temporal distribution of surface water from 1984 to 2015 and provides statistics on the extent and change of those water surfaces.
         # These data were generated using 3,066,102 scenes from Landsat 5, 7, and 8 acquired between 16 March 1984 and 10 October 2015. Each pixel was individually classified into water / non-water using an expert system and the results were collated into a monthly history for the entire time period and two epochs (1984-1999, 2000-2015) for change detection.
-        self.direct_sanity = ee.Image('users/aduncan/flii2_direct/total_direct_pressure_2017')
-        self.indirect_sanity = ee.Image('users/yourecoveredinbees/flii2_ephemeral/total_indirect_pressure_2017')
+        # self.direct_sanity = ee.Image('users/aduncan/flii2_direct/total_direct_pressure_2017')
+        # self.indirect_sanity = ee.Image('users/yourecoveredinbees/flii2_ephemeral/total_indirect_pressure_2017')
         self.water_extent = ee.Image('JRC/GSW1_0/GlobalSurfaceWater').select('occurrence').lte(75).unmask(1).multiply(ee.Image(0).clip(ee.FeatureCollection('users/aduncan/caspian')).unmask(1))
         self.ocean = ee.Image('users/aduncan/cci/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40')
         self.start_date = '2017-03-01'
@@ -381,7 +381,7 @@ class FLII(object):
         self.infra_hawths = self.hawths(self.infrastructure, 0.254)
         self.crop_hawths = self.hawths(self.crop, 2.069)
         self.defo_hawths = self.hawths(self.deforestation, 8.535)
-        self.total_direct_pressure = self.infra_hawths.add(self.crop_hawths).add(self.defo_hawths).updateMask(self.water_extent).updateMask(self.ocean).unmask(0)
+        self.total_direct_pressure = self.infra_hawths.updateMask(self.water_extent).updateMask(self.ocean).unmask(0) if connectivity else self.infra_hawths.add(self.crop_hawths).add(self.defo_hawths).updateMask(self.water_extent).updateMask(self.ocean).unmask(0)
         self.crs = 'EPSG:4326'
         self.total_indirect_pressure = self.total_direct_pressure.reduceNeighborhood(
                     reducer=ee.Reducer.mean(),
@@ -393,8 +393,8 @@ class FLII(object):
                     kernel=self.kernelDefaun()).reproject(crs=self.crs,scale=600)
         self.final_defaun_pressure = self.defaun_pressure.resample().reproject(crs=self.crs,scale=self.scale).multiply(0.25).where(self.defaun_pressure.gte(0.1),0.1)
         self.total_pressure_raw = self.total_direct_pressure.add(self.total_indirect_pressure).add(self.final_defaun_pressure).updateMask(self.water_extent).updateMask(self.ocean) 
-        self.ratio = self.connectivity.divide(self.boreal_connectivity.unmask(0.001).where(self.boreal_connectivity.eq(0),0.001))
-        self.final_ratio = self.ratio.where(self.ratio.gt(1),1)
+        self.ratio = self.connectivity if connectivity else self.connectivity.divide(self.boreal_connectivity.unmask(0.001).where(self.boreal_connectivity.eq(0),0.001))
+        self.final_ratio = self.connectivity if connectivity else self.ratio.where(self.ratio.gt(1),1)
         
     def hawths(self, image, exp_gamma):
         return ee.Image(1).subtract(image.multiply(-1).multiply(ee.Number(exp_gamma)).exp())
@@ -508,12 +508,18 @@ class FLII(object):
         export2asset(self.defaun_pressure, 'flii2v2_ephemeral/total_longrange_pressure_20' + self.year, aoi)
         export2asset(self.defaun_pressure, 'flii2v3_fpi/fpi_20' + self.year, aoi)
         
+    def export_sample(self):
+        _file = 'flii2v6_defor_dropLTE6_22'
+        export2GCP(self.deforestation, f'{_file}', aoi)
+        logging.info(f"Exported finished, saving to GCS bucket '{bucket_name}/{path_bucket_file}' with the name of {_file}.")
+        
     def flii_metric(self):            
         ratio_0_1 = self.final_ratio.multiply(-1).add(1)
         raw_intact = ratio_0_1.add(self.total_pressure_raw)
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
         final_metric = final_metric.where(final_metric.lte(0),0)
-        export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
+        # export2GCP(final_metric.multiply(10000).toInt().unmask(-9999), f'flii_{uid}', aoi)
+        export2GCP(final_metric, f'flii_{uid}', aoi)
         logging.info(f"FLII modeled has been finised. Output saved to GCS bucket under '{bucket_name}/{path_bucket_file}' with the name of flii_{uid}.")
 
 
@@ -643,7 +649,7 @@ def main(input_raster):
     start = datetime.now()
     _connectivity = input_raster
     _connectivity_rescale = rescale_raster(_connectivity, 'futureforest')
-    
+
     try:
         upload_to_bucket(_connectivity_rescale, bucket_name, path_bucket_file)
     finally:
@@ -652,8 +658,6 @@ def main(input_raster):
             wait_for_task_completion(task_id)
         finally:
             start_ee_public(asset_id)
-            # total_connectivity = TotalConnectivity(future_fc=asset_id, output_export='aoi_modified_tc')
-            # total_connectivity.export_to_GCP()
             fetch_gee = FLII(connectivity=asset_id)
             fetch_gee.flii_metric()
 
