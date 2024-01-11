@@ -642,6 +642,9 @@ def delete_gcs_file(bucket_name, path_bucket_file):
     logging.info(f"File gs://{bucket_name}/{path_bucket_file} deleted successfully.")
 
 def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file=False):
+    """
+    Delete intermediary data as a result for producing the FLII model
+    """
     remove_asset(asset_id)
     delete_gcs_file(bucket_name, path_bucket_file)
     if local_file:
