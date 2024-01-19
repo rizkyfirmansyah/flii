@@ -4,8 +4,9 @@
 # Author: Rizky Firmansyah
 # rizky.firmansyah@wri.org
 # SCeNe Coalition, 2023
-# Original developed by Adam Duncan 
+# Original script developed by Adam Duncan 
 # Article: https://www.nature.com/articles/s41467-020-19493-3
+# Supplementary Material: https://static-content.springer.com/esm/art%3A10.1038%2Fs41467-020-19493-3/MediaObjects/41467_2020_19493_MOESM1_ESM.pdf
 
 
 import ee
