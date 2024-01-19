@@ -91,18 +91,34 @@ aoi_df = gpd.read_file(aoi_shp).to_json()
 aoi = ee.FeatureCollection(json.loads(aoi_df)).geometry()
 
 def array_calc(number):
+    """Calculate the power of 0.75 raised to the given number.
+
+    Args:
+        number (numeric): The exponent for the power calculation.
+
+    Returns:
+        numeric: The result of 0.75 raised to the power of the given number.
+    """
     return ee.Number(0.75).pow(ee.Number(number))
 
 def array_calc_defaun(number):
+    """Subtract the given number from 19.
+
+    Args:
+        number (numeric): The number to be subtracted from 19.
+
+    Returns:
+        numeric: The result of subtracting the given number from 19.
+    """
     return ee.Number(19).subtract(ee.Number(number))
 
 def log2db_gee_c(asset_id, path_bucket_file, local_path):
-    """Should store, at the minimum, these variables while batch processing the FLII function to ensure data flushing
-        asset_id
-        path_bucket_file
-        local_path
+    """Store information about processed GEE collections in a PostgreSQL database.
+
     Args:
-        layer (_type_): _description_
+        asset_id (str): Asset ID of the processed GEE collection.
+        path_bucket_file (str): Path to the bucket file.
+        local_path (str): Local path of the processed GEE collection.
     """
     try:
         psy_conn = psycopg2.connect(
@@ -126,6 +142,15 @@ def log2db_gee_c(asset_id, path_bucket_file, local_path):
         psy_conn.close()
 
 def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
+    """Export Earth Engine image to Google Cloud Storage.
+
+    Args:
+        image: Earth Engine image to export.
+        fileName (str): Name to assign to the exported file.
+        aoi: Area of interest for the export.
+        scale (int, optional): Resolution in meters. Defaults to 300.
+        crs (str, optional): Coordinate Reference System. Defaults to 'EPSG:4326'.
+    """
     task = ee.batch.Export.image.toCloudStorage(
         image=image, 
         description=fileName,
@@ -142,6 +167,15 @@ def export2GCP(image, fileName, aoi, scale=300, crs='EPSG:4326'):
         time.sleep(30)
     
 def export2asset(image, assetId, aoi, scale=300, crs='EPSG:4326'):
+    """Export Earth Engine image to an Earth Engine asset.
+
+    Args:
+        image: Earth Engine image to export.
+        assetId (str): Asset ID to assign to the exported image.
+        aoi: Area of interest for the export.
+        scale (int, optional): Resolution in meters. Defaults to 300.
+        crs (str, optional): Coordinate Reference System. Defaults to 'EPSG:4326'.
+    """
     task = ee.batch.Export.image.toAsset(
         image=image, 
         description='exporting ' + assetId,
@@ -157,7 +191,15 @@ def export2asset(image, assetId, aoi, scale=300, crs='EPSG:4326'):
         time.sleep(30)
     
 def export2drive(image, description, aoi, scale=300, crs='EPSG:4326'):
-    
+    """Export Earth Engine image to Google Drive.
+
+    Args:
+        image: Earth Engine image to export.
+        description (str): Description to assign to the exported file.
+        aoi: Area of interest for the export.
+        scale (int, optional): Resolution in meters. Defaults to 300.
+        crs (str, optional): Coordinate Reference System. Defaults to 'EPSG:4326'.
+    """
     task = ee.batch.Export.image.toDrive(
         image=image,
         description=description,
@@ -178,7 +220,15 @@ def export2drive(image, description, aoi, scale=300, crs='EPSG:4326'):
         time.sleep(30)
 
 def mktemp(prefix=None, dir=None):
-    # Set working directory in the current file under shp dir
+    """Create a temporary file path with an optional prefix.
+
+    Args:
+        prefix (str, optional): Prefix for the temporary file name. Defaults to None.
+        dir (str, optional): Directory path to store the temporary file. Defaults to None.
+
+    Returns:
+        str: Temporary file path.
+    """
     if dir is None:
         dir = os.path.join(os.getcwd(), 'shp')
     if not os.path.exists(dir):
@@ -196,14 +246,14 @@ def mktemp(prefix=None, dir=None):
     return tempfile
 
 def rescale_raster(input_raster, out_file):
-    """Reproject into EPSG:4326 then resample into 300 from 30 (matching pixel resolution with others raster)
+    """Reproject and resample a raster to match specific resolution and CRS.
 
     Args:
-        input_raster (_type_): absolute path where the projected raster is stored
-        out_file (_type_): _description_
+        input_raster (str): Absolute path of the input raster file.
+        out_file (str): Output file name.
 
     Returns:
-        output_file: the absolute path of raster file
+        str: Absolute path of the rescaled raster file.
     """
 
     from rasterio.enums import Resampling
@@ -280,11 +330,46 @@ def rescale_raster(input_raster, out_file):
         return output_file
 
 class TotalConnectivity(object):
-    """Obtain the total connectivity of forest
-    asset_id = users/aduncan/osm_earth/flii2v6_total_connectivity_PRE2022
+    """Calculate and export the total connectivity of forests.
 
     Args:
-        object (_type_): _description_
+        future_fc (ee.Image, optional): Earth Engine image representing future forest cover.
+        asset_id (str, optional): Asset ID for storing the results in Google Earth Engine.
+        output_export (str, optional): Output name for exporting to Google Cloud Storage.
+
+    Attributes:
+        esacci (ee.Image): Earth Engine image representing Land Cover Classification for the year 2015.
+        ecoregion (ee.FeatureCollection): Earth Engine feature collection representing ecoregions.
+        forest_cover (ee.Image): Earth Engine image representing the global forest cover map.
+        loss_classes_new (ee.Image): Earth Engine image representing updated loss classes.
+        systemscale (int): Spatial resolution of the Earth Engine images (in meters).
+        fragmincoresize (int): Minimum core size for calculating connectivity.
+        crs (str): Coordinate Reference System (e.g., 'EPSG:4326').
+        output_export (str): Output name for exporting to Google Cloud Storage.
+        asset_id (str): Asset ID for storing the results in Google Earth Engine.
+        gaussian_kernel (ee.Kernel): Gaussian kernel for image convolution.
+        future_fc (ee.Image): Earth Engine image representing future forest cover.
+        forest_cover_ourdefinition (ee.Image): Processed forest cover based on specified criteria.
+        boreal_forest (ee.Image): Binary image indicating the presence of boreal forests.
+
+    Methods:
+        connectivity_original(lossyear, loss_classes, unknown_bool):
+            Calculate the original total connectivity of forests.
+
+        connectivity_modified():
+            Calculate the modified total connectivity of forests.
+
+        main():
+            Calculate total connectivity based on specific land cover categories.
+
+        export():
+            Export the original total connectivity results to Google Cloud Storage.
+
+        export_to_GCP():
+            Export the modified total connectivity results to Google Cloud Storage.
+
+        export_to_asset():
+            Export the modified total connectivity results to Google Earth Engine asset.
     """
     def __init__(self, future_fc=None, asset_id=None, output_export=None):
         self.esacci = ee.Image('users/aduncan/cci/ESACCI-LC-L4-LCCS-Map-300m-P1Y-1992_2015-v207')
@@ -303,6 +388,16 @@ class TotalConnectivity(object):
         self.boreal_forest = self.ecoregion.filter(ee.Filter.eq('BIOME_NAME','Boreal Forests/Taiga')).reduceToImage(['BIOME_NUM'],ee.Reducer.max()).gt(0).unmask(0).reproject(crs=self.crs,scale=self.systemscale)
 
     def connectivity_original(self, lossyear, loss_classes, unknown_bool):
+        """Calculate the original total connectivity of forests.
+
+        Args:
+            lossyear (int): Year of forest loss.
+            loss_classes (ee.Image): Earth Engine image representing loss classes.
+            unknown_bool (int): Unknown loss class value.
+
+        Returns:
+            ee.Image: Resulting total connectivity image.
+        """
         hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9").select('treecover2000').gt(20)
         hansen_lossyear = ee.Image("UMD/hansen/global_forest_change_2022_v1_10").select('lossyear')
         hansen_loss = hansen_lossyear.lt(lossyear).updateMask(hansen_lossyear.neq(0)).multiply(loss_classes.neq(4)).multiply(loss_classes.neq(2)).multiply(loss_classes.neq(3)).multiply(loss_classes.neq(unknown_bool)).unmask(0)
@@ -314,11 +409,21 @@ class TotalConnectivity(object):
         return focal_sum.resample().reproject(crs=self.crs, scale=self.systemscale).updateMask(hansen_no_islet)
     
     def connectivity_modified(self):
+        """Calculate the modified total connectivity of forests.
+
+        Returns:
+            ee.Image: Resulting modified total connectivity image.
+        """
         focal_sum = self.future_fc.connectedPixelCount().reproject(crs=self.crs, scale=ee.Number(self.systemscale))
         final_focal_sum = focal_sum.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=self.gaussian_kernel)
         return final_focal_sum
 
     def main(self):
+        """Calculate total connectivity based on specific land cover categories.
+
+        Returns:
+            ee.Image: Resulting total connectivity image.
+        """
         ESACCI_2015 = self.ESACCI.select('b24')
         ESACCI_60 =  ESACCI_2015.eq(ee.Image.constant(60))
         ESACCI_100 =  ESACCI_2015.eq(ee.Image.constant(100))
@@ -346,14 +451,25 @@ class TotalConnectivity(object):
         return total_connectivity()
 
     def export(self):
+        """Export the original total connectivity results to Google Cloud Storage."""
         export2GCP(self.connectivity_original(22, self.loss_classes_new, 4), 'aoi_total_connectivity', aoi)
 
     def export_to_GCP(self):
+        """Export the modified total connectivity results to Google Cloud Storage.
+
+        Returns:
+            str: Path to the exported file in Google Cloud Storage.
+        """
         export2GCP(self.connectivity_modified(), self.output_export, aoi)
         logging.info(f"Total Connectivity has been finished. Output saved to GCS bucket under '{bucket_name}/benefit/flii/{self.output_export}.tif'")
         return '{bucket_name}/benefit/flii/{self.output_export}.tif'
 
     def export_to_asset(self):
+        """Export the modified total connectivity results to Google Earth Engine asset.
+
+        Returns:
+            str: Asset ID of the exported result in Google Earth Engine.
+        """
         export2asset(self.connectivity_modified(), self.asset_id, aoi)
         logging.info(f"Total Connectivity has been finished. Output saved to GEE asset with the name of '{self.asset_id}'")
         return self.asset_id
@@ -361,6 +477,15 @@ class TotalConnectivity(object):
 class FLII(object):
     
     def __init__(self, connectivity=None, year=None, mask=None):
+        """
+        Initialize FLII object.
+
+        Parameters:
+        - connectivity (ee.Image, optional): An Earth Engine Image representing connectivity.
+        - year (str, optional): A string representing the year.
+        - mask (boolean, optional): True or False, default to None/False. If setting True, the image result will be cropped by AoI feature.
+
+        """
         self.year = year or ''
         self.mask = mask
         # Raw Weighted Infrastructure (I’)
@@ -399,9 +524,27 @@ class FLII(object):
         self.final_ratio = self.connectivity if connectivity else self.ratio.where(self.ratio.gt(1),1)
         
     def hawths(self, image, exp_gamma):
+        """
+        Compute the Hawths transformation on the input image.
+
+        Parameters:
+        - image (ee.Image): Input Earth Engine Image.
+        - exp_gamma (float): Exponential gamma parameter.
+
+        Returns:
+        - ee.Image: Transformed Image.
+
+        """
         return ee.Image(1).subtract(image.multiply(-1).multiply(ee.Number(exp_gamma)).exp())
     
     def kernelIndirect(self):
+        """
+        Generate a fixed kernel for indirect pressure calculation.
+
+        Returns:
+        - ee.Kernel: Fixed kernel.
+
+        """
         _weight1 = [999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,19,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999]
         _weight2 = [999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,18.9736659610103,18.6815416922694,18.4390889145858,18.2482875908947,18.1107702762748,18.0277563773199,18,18.0277563773199,18.1107702762748,18.2482875908947,18.4390889145858,18.6815416922694,18.9736659610103,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999]
         _weight3 = [999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,18.7882942280559,18.3847763108502,18.0277563773199,17.7200451466694,17.464249196573,17.2626765016321,17.1172427686237,17.0293863659264,17,17.0293863659264,17.1172427686237,17.2626765016321,17.464249196573,17.7200451466694,18.0277563773199,18.3847763108502,18.7882942280559,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999,999999]
@@ -454,7 +597,13 @@ class FLII(object):
         return fixedkernel
             
     def kernelDefaun(self):
-            
+        """
+        Generate a fixed kernel for defaunation pressure calculation.
+
+        Returns:
+        - ee.Kernel: Fixed kernel.
+
+        """
         _weight_defaun1 = [19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19]
         _weight_defaun2 = [19,19,19,19,19,19,19,19,19,19,19,19,19,18.9736659610103,18.6815416922694,18.4390889145858,18.2482875908947,18.1107702762748,18.0277563773199,18,18.0277563773199,18.1107702762748,18.2482875908947,18.4390889145858,18.6815416922694,18.9736659610103,19,19,19,19,19,19,19,19,19,19,19,19,19]
         _weight_defaun3 = [19,19,19,19,19,19,19,19,19,19,19,18.7882942280559,18.3847763108502,18.0277563773199,17.7200451466694,17.464249196573,17.2626765016321,17.1172427686237,17.0293863659264,17,17.0293863659264,17.1172427686237,17.2626765016321,17.464249196573,17.7200451466694,18.0277563773199,18.3847763108502,18.7882942280559,19,19,19,19,19,19,19,19,19,19,19]
@@ -511,11 +660,24 @@ class FLII(object):
         export2asset(self.defaun_pressure, 'flii2v3_fpi/fpi_20' + self.year, aoi)
         
     def export_sample(self):
+        """
+        Exports the sample image to Google Cloud Storage (GCS) bucket.
+
+        Returns:
+        None
+        """
         _file = 'flii2v6_defor_dropLTE6_22'
         export2GCP(self.deforestation, f'{_file}', aoi)
         logging.info(f"Exported finished, saving to GCS bucket '{bucket_name}/{folder_bucket_file}/{_file}'.")
         
-    def flii_metric(self):            
+    def flii_metric(self):
+        """
+        Calculates the FLII metric based on the provided input images and parameters.
+        Optionally applies a mask and exports the result to a GCS bucket.
+
+        Returns:
+        str: The URL of the saved output in the GCS bucket.
+        """
         ratio_0_1 = self.final_ratio.multiply(-1).add(1)
         raw_intact = ratio_0_1.add(self.total_pressure_raw)
         final_metric = ee.Image.constant(10).subtract(raw_intact.multiply(ee.Number(10).divide(ee.Number(3))))
@@ -533,9 +695,19 @@ class FLII(object):
 
 
 def upload_to_bucket(path_to_file, bucket_name, blob_name):
+    """
+    Uploads data to a Google Cloud Storage (GCS) bucket.
+
+    Args:
+        path_to_file (str): Path to the file to be uploaded.
+        bucket_name (str): Name of the GCS bucket.
+        blob_name (str): Name to be given to the blob in the bucket.
+
+    Returns:
+        str: Public URL of the uploaded file.
+    """
     from google.cloud import storage
-    """ Upload data to a bucket"""
-     
+
     # Explicitly use service account credentials by specifying the private key file.
     storage_client = storage.Client.from_service_account_json(KEY_IAM)
 
@@ -548,10 +720,14 @@ def upload_to_bucket(path_to_file, bucket_name, blob_name):
     return blob.public_url
 
 def check_geetask_status(task_id):
-    """Check the status of an Earth Engine task.
+    """
+    Checks the status of an Earth Engine task.
 
     Args:
-        task_id (string): Unique task ID. Check on this url https://code.earthengine.google.com/tasks
+        task_id (str): Unique task ID. Check on this URL: https://code.earthengine.google.com/tasks
+
+    Returns:
+        str: State of the task ('RUNNING', 'COMPLETED', 'FAILED', etc.).
     """
     try:
         task_status = ee.data.getTaskStatus(task_id)[0]
@@ -561,11 +737,12 @@ def check_geetask_status(task_id):
         return None
         
 def wait_for_task_completion(task_id, polling_interval=15):
-    """Wait for an Earth Engine task to complete.
+    """
+    Waits for an Earth Engine task to complete.
 
     Args:
-        task_id (string): Unique task ID. Check on this url https://code.earthengine.google.com/tasks
-        polling_interval (int, optional): _description_. Defaults to 30.
+        task_id (str): Unique task ID. Check on this URL: https://code.earthengine.google.com/tasks
+        polling_interval (int, optional): Interval (in seconds) between status checks. Defaults to 30.
     """
     while True:
         status = check_geetask_status(task_id)
@@ -578,16 +755,15 @@ def wait_for_task_completion(task_id, polling_interval=15):
         time.sleep(polling_interval)
 
 def start_ee_upload(asset_id, gcs_path):
-    """Ingesting a GeoTIFF file from Google Cloud Storage into Google Earth Engine using earthengine command
-    
-    Read more: https://developers.google.com/earth-engine/guides/command_line#upload 
+    """
+    Ingests a GeoTIFF file from Google Cloud Storage into Google Earth Engine using the earthengine command.
 
     Args:
-        asset_id (_type_): _description_
-        gcs_path (_type_): _description_
+        asset_id (str): Asset ID in Google Earth Engine.
+        gcs_path (str): Path to the GeoTIFF file in Google Cloud Storage.
 
     Returns:
-        _type_: _description_
+        str: Task ID of the upload task.
     """
     from subprocess import Popen, PIPE
     from re import search
@@ -606,6 +782,12 @@ def start_ee_upload(asset_id, gcs_path):
         return None
     
 def start_ee_public(asset_id):
+    """
+    Sets the access control of an Earth Engine asset to public.
+
+    Args:
+        asset_id (str): Asset ID in Google Earth Engine.
+    """
     from subprocess import Popen, PIPE
     process = Popen(['earthengine', 'acl', 'set', 'public', asset_id], stdout=PIPE, text=True)
     # Capture the output of the command
@@ -613,14 +795,12 @@ def start_ee_public(asset_id):
     return None
 
 def remove_asset(asset_id):
-    """Removing specified asset in the Google Earth Engine.
-    This command is irreversible, and once an asset is deleted, it cannot be recovered
+    """
+    Removes the specified asset from Google Earth Engine.
+    This command is irreversible, and once an asset is deleted, it cannot be recovered.
 
     Args:
-        asset_id (string): _description_
-
-    Returns:
-        _type_: _description_
+        asset_id (str): Asset ID in Google Earth Engine.
     """
     from subprocess import Popen, PIPE
     process = Popen(['earthengine', 'rm', asset_id], stdout=PIPE, text=True)
@@ -629,11 +809,12 @@ def remove_asset(asset_id):
     return None
 
 def delete_gcs_file(bucket_name, path_bucket_file):
-    """Delete a file from Google Cloud Storage
+    """
+    Deletes a file from Google Cloud Storage.
 
     Args:
-        bucket_name (_type_): _description_
-        path_bucket_file (_type_): _description_
+        bucket_name (str): Name of the GCS bucket.
+        path_bucket_file (str): Path to the file in the GCS bucket.
     """
     from google.cloud import storage
      
@@ -649,7 +830,13 @@ def delete_gcs_file(bucket_name, path_bucket_file):
 
 def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file=False):
     """
-    Delete intermediary data as a result for producing the FLII model
+    Deletes intermediary data produced during the FLII model process.
+
+    Args:
+        asset_id (str): Asset ID to be removed from Google Earth Engine.
+        bucket_name (str): Name of the GCS bucket.
+        path_bucket_file (str): Path to the file in the GCS bucket.
+        local_file (bool, optional): Whether to delete the local file. Defaults to False.
     """
     remove_asset(asset_id)
     delete_gcs_file(bucket_name, path_bucket_file)
@@ -657,6 +844,17 @@ def cleanup_raster(asset_id, bucket_name, path_bucket_file, local_file=False):
         os.remove(local_file)
         
 def summary_statistics(aoi_shp, raster, stats='mean'):
+    """
+    Computes summary statistics of a raster within the specified AOI.
+
+    Args:
+        aoi_shp (str): Path to the AOI shapefile.
+        raster (str): Path to the raster file.
+        stats (str, optional): Type of statistics to compute (e.g., 'mean'). Defaults to 'mean'.
+
+    Returns:
+        str: Formatted summary statistics.
+    """
     from rasterstats import zonal_stats
     
     _ = zonal_stats(aoi_shp, raster, stats=stats)
@@ -664,7 +862,7 @@ def summary_statistics(aoi_shp, raster, stats='mean'):
     avg_stat = [stat[stats] for stat in _]
     round_avg_stat = f'{avg_stat[0]:,.1f}'
 
-    logging.info(f"Summary statistics of FLII Model with intervention: {round_avg_stat}")
+    logging.info(f"Summary statistics of FLII Model: {round_avg_stat}")
     return f'{round_avg_stat}'
     
 def main(input_raster):
@@ -688,7 +886,7 @@ def main(input_raster):
     logging.info(f"elapsed time to process the data: {datetime.now() - start}")
     
 if __name__ == "__main__":
-    input_raster = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/future_forestcover_eae30675-d.tif'
+    input_raster = '/Users/rizkyfirmansyah/Documents/PLATFORM/nbs/flii/shp/AOI2_proj_fc_avoided_def.tif'
     main(input_raster)
     
     # cleanup_raster(asset_id, bucket_name, path_bucket_file)
