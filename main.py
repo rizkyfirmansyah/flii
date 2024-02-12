@@ -873,6 +873,7 @@ def main(input_raster):
     try:
         upload_to_bucket(_connectivity_rescale, bucket_name, path_bucket_file)
     finally:
+        # set default asset_id in GEE by using 8th char from random uid
         task_id = start_ee_upload(asset_id, gcs_path)
         try:
             wait_for_task_completion(task_id)
