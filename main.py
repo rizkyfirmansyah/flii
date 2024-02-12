@@ -490,7 +490,7 @@ class FLII(object):
         self.year = year or ''
         self.mask = mask
         # Raw Weighted Infrastructure (I’)
-        self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_22_rast_300/new_infra_22')
+        self.infrastructure = ee.Image('projects/wcs-forest-second-backup/assets/osm_23_rast_300/new_infra_23')
         # Raw Direct Deforestation Pressure Score (H’)
         self.deforestation = ee.Image('users/aduncan/flii2_defor_direct/flii2v6_defor_dropLTE6_22')
         # Raw Direct Agriculture Pressure Score (A’)
