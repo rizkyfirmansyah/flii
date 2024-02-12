@@ -503,10 +503,8 @@ class FLII(object):
         # self.indirect_sanity = ee.Image('users/yourecoveredinbees/flii2_ephemeral/total_indirect_pressure_2017')
         self.water_extent = ee.Image('JRC/GSW1_0/GlobalSurfaceWater').select('occurrence').lte(75).unmask(1).multiply(ee.Image(0).clip(ee.FeatureCollection('users/aduncan/caspian')).unmask(1))
         self.ocean = ee.Image('users/aduncan/cci/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40')
-        self.start_date = '2017-03-01'
-        self.end_date = '2017-03-31'
         self.scale = 300
-        self.infra_hawths = self.hawths(self.infrastructure, 0.254)
+        self.infra_hawths = self.hawths(self.infrastructure, 0.254) # how do they get this exact number? see https://docs.google.com/spreadsheets/d/1o4i17zFB7gum65xoewgoIt2WzAFF4Kl7/edit?usp=sharing&ouid=116984913633171647667&rtpof=true&sd=true
         self.crop_hawths = self.hawths(self.crop, 2.069)
         self.defo_hawths = self.hawths(self.deforestation, 8.535)
         self.total_direct_pressure = self.infra_hawths.updateMask(self.water_extent).updateMask(self.ocean).unmask(0) if connectivity else self.infra_hawths.add(self.crop_hawths).add(self.defo_hawths).updateMask(self.water_extent).updateMask(self.ocean).unmask(0)
